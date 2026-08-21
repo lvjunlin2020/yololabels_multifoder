@@ -655,6 +655,62 @@ bool MainWindow::get_files(QString imgDir)
     return value;
 }
 
+bool MainWindow::dir_has_images(const QString& dirPath) const
+{
+    QDir dir(dirPath);
+    return !dir.entryList(QStringList() << "*.jpg" << "*.JPG" << "*.png" << "*.bmp",
+                          QDir::Files).isEmpty();
+}
+
+QStringList MainWindow::image_bearing_subdirs(const QString& dirPath) const
+{
+    QDir dir(dirPath);
+    QCollator collator;
+    collator.setNumericMode(true);
+
+    QStringList subDirs = dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    std::sort(subDirs.begin(), subDirs.end(), collator);
+
+    QStringList result;
+    for (const QString& sub : subDirs)
+        if (dir_has_images(dir.filePath(sub)))
+            result << dir.filePath(sub);
+    return result;
+}
+
+// Register the given directory as a labeling folder. If it is a parent of
+// image-bearing subdirectories, all of those are registered as individual
+// folders (one level deep) instead of being treated as one empty folder.
+// The current folder switches to the first (sorted) listed entry.
+bool MainWindow::add_folders_from(const QString& dirPath)
+{
+    QStringList folders;
+    if (dir_has_images(dirPath))
+        folders << dirPath;
+    folders << image_bearing_subdirs(dirPath);
+
+    if (folders.isEmpty()) return false;
+
+    int firstIdx = -1;
+    for (const QString& f : folders) {
+        const int idx = m_dirs.addDir(f.toStdString());
+        if (idx >= 0 && (firstIdx < 0 || idx < firstIdx))
+            firstIdx = idx;
+    }
+    m_dirs.switchToDir(firstIdx);
+
+    get_files(QString::fromStdString(m_dirs.currentPath()));
+
+    refresh_folder_list();
+    save_dir_state();
+
+    statusBar()->showMessage(
+        QString("Added %1 folder(s) from %2")
+            .arg(folders.size())
+            .arg(QFileInfo(dirPath).fileName()), 4000);
+    return true;
+}
+
 void MainWindow::open_img_dir(bool& ret)
 {
     pjreddie_style_msgBox(QMessageBox::Information,"Help", "Step 1. Open Your Data Set Directory");
@@ -676,15 +732,9 @@ void MainWindow::open_img_dir(bool& ret)
         return;
     }
 
-    ret = get_files(imgDir);
+    ret = add_folders_from(imgDir);
     if (!ret)
         pjreddie_style_msgBox(QMessageBox::Critical,"Error", "This folder is empty");
-    else {
-        const int idx = m_dirs.addDir(imgDir.toStdString());
-        if (idx >= 0) m_dirs.switchToDir(idx);
-        refresh_folder_list();
-        save_dir_state();
-    }
 }
 
 void MainWindow::open_obj_file(bool& ret)
@@ -1288,11 +1338,10 @@ void MainWindow::initSideTabWidget()
 
     m_btnNewFolder = new QPushButton("+ Open New Folder\u2026", folderTab);
     m_btnNewFolder->setStyleSheet(btnStyle);
-    // open_img_dir() registers the folder, refreshes the list and saves state
-    connect(m_btnNewFolder, &QPushButton::clicked, this, [this]() {
-        bool ok = false;
-        open_img_dir(ok);
-    });
+    // Same flow as the main "Open Files" button: folder dialog, class file
+    // if none loaded yet, then init() to refresh the image view
+    connect(m_btnNewFolder, &QPushButton::clicked, this,
+            &MainWindow::on_pushButton_open_files_clicked);
 
     folderLayout->addWidget(folderHint);
     folderLayout->addWidget(m_folderList, 1);
@@ -1481,6 +1530,13 @@ void MainWindow::restore_dir_state()
         entries.push_back(e);
     }
     m_dirs.restore(entries, dirCur);
+
+    // Drop folders that no longer exist on disk (deleted or moved) so the
+    // Folders list never shows ghost entries
+    const std::vector<DirEntry> snap = m_dirs.snapshot();
+    for (const DirEntry& d : snap)
+        if (!QDir(QString::fromStdString(d.path)).exists())
+            m_dirs.removeDir(d.path);
 }
 
 void MainWindow::refresh_folder_list()

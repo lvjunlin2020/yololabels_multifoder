@@ -107,6 +107,10 @@ private:
     void            save_dir_state();
     void            restore_dir_state();
 
+    bool            dir_has_images(const QString& dirPath) const;
+    QStringList     image_bearing_subdirs(const QString& dirPath) const;
+    bool            add_folders_from(const QString& dirPath);
+
     // ── Cloud auto-label ───────────────────────────────────────────────
     void initSideTabWidget();
     void syncAiSettingsTab();
