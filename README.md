@@ -7,25 +7,44 @@
 
 ![multi-folder labeling](docs/screenshot_multidir.png)
 
-## What's new in this fork
+## What's new in this fork / 本 fork 的新增内容
 
-**Multi-directory labeling management** — annotate several dataset folders in one session
-without reopening the app:
+> **The headline improvement is multi-folder continuous labeling.**
+> The original tool forces you to reopen a dialog every time you switch dataset folders —
+> this fork removes that friction so you can keep a whole labeling session running across
+> as many folders as you need.
+>
+> **本 fork 最核心的改进是：支持多目录连续标注。**
+> 原版切换数据集目录必须重新打开文件对话框——本 fork 去掉了这个麻烦，整个标注会话可以在任意多个目录之间无缝进行。
 
-- **Hotkeys**: `Ctrl + Shift + D` / `Ctrl + Shift + A` cycle to the next / previous folder
-  (ordered naturally, so `train2` comes before `train10`).
-- **Folders tab**: a new tab in the right panel lists every opened folder, shows the
-  active one with its progress (`images (1/11)` in the screenshot above), and switches on
-  click. The **+ Open New Folder…** button adds more folders.
-- **Progress memory**: each folder remembers the last image you were on — switch away and
-  back, and you continue where you left off. Progress also survives app restarts.
-- **Per-folder class files**: each folder can be bound to its own class list; switching to
-  it loads that list automatically (infrastructure in place, UI to bind is on the roadmap).
-- **Legacy migration**: old single-folder sessions are picked up automatically.
+- **Hotkeys / 热键切换**: `Ctrl + Shift + D` / `Ctrl + Shift + A` cycle to the next / previous
+  folder (ordered naturally, so `train2` comes before `train10`).
+  按 `Ctrl + Shift + D` / `Ctrl + Shift + A` 在目录之间循环切换(按自然顺序排序，`train2` 排在 `train10` 之前)。
+
+- **Folders tab / 侧边栏目录列表**: a new tab in the right panel lists every opened folder,
+  shows the active one with its progress (`images (1/11)` in the screenshot above), and switches
+  on click. The **+ Open New Folder…** button adds more folders.
+  右侧面板新增 “Folders” 标签页，列出所有已打开目录，当前目录带进度提示(如截图中的 `images (1/11)`)，点击即可切换；底部 “+ Open New Folder…” 按钮可继续追加目录。
+
+- **Progress memory / 进度记忆**: each folder remembers the last image you were on — switch
+  away and back, and you continue where you left off. Progress also survives app restarts.
+  每个目录独立记忆浏览到的图片位置——切走再切回，仍在原处继续。进度也跨程序重启保留。
+
+- **Per-folder class files / 每目录类别文件**: each folder can be bound to its own class list;
+  switching to it loads that list automatically (infrastructure in place, UI to bind is on the
+  roadmap).
+  每个目录可以绑定自己的类别文件，切换时自动加载对应类别(底层机制已完备，绑定 UI 在路线图中)。
+
+- **Legacy migration / 旧会话兼容**: old single-folder sessions are picked up automatically.
+  旧版单目录的 QSettings 会话会自动迁移到目录列表里，老用户升级无感。
 
 Design notes, build instructions, lessons learned and a maintenance guide are documented
 in [docs/development-guide.md](docs/development-guide.md). The folder bookkeeping lives in
 a Qt-free `DirManager` core covered by 62 unit tests (`tests/test_dir_manager.cpp`).
+
+设计思路、踩坑记录与维护手册见 [docs/development-guide.md](docs/development-guide.md)。
+目录管理逻辑抽离在零 Qt 依赖的 `DirManager` 核心中，含 62 个单元测试
+(`tests/test_dir_manager.cpp`)。
 
 Everything below is the original YOLO-Label documentation.
 
