@@ -5,7 +5,7 @@
 > Full credit for the original tool goes to the original author — the bulk of this README
 > is his original documentation, kept for completeness.
 
-![multi-folder labeling](docs/screenshot_multidir.png)
+![multi-folder labeling](multi-folders.png)
 
 ## What's new in this fork / 本 fork 的新增内容
 
