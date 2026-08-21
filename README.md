@@ -1,4 +1,35 @@
-# YOLO-Label
+# YoloLabel — Multi-Folder Edition
+
+> **This is a modified fork of [Yolo_Label](https://github.com/developer0hye/Yolo_Label)
+> by Yonghye Kwon, published under the same MIT License.**
+> Full credit for the original tool goes to the original author — the bulk of this README
+> is his original documentation, kept for completeness.
+
+![multi-folder labeling](docs/screenshot_multidir.png)
+
+## What's new in this fork
+
+**Multi-directory labeling management** — annotate several dataset folders in one session
+without reopening the app:
+
+- **Hotkeys**: `Ctrl + Shift + D` / `Ctrl + Shift + A` cycle to the next / previous folder
+  (ordered naturally, so `train2` comes before `train10`).
+- **Folders tab**: a new tab in the right panel lists every opened folder, shows the
+  active one with its progress (`images (1/11)` in the screenshot above), and switches on
+  click. The **+ Open New Folder…** button adds more folders.
+- **Progress memory**: each folder remembers the last image you were on — switch away and
+  back, and you continue where you left off. Progress also survives app restarts.
+- **Per-folder class files**: each folder can be bound to its own class list; switching to
+  it loads that list automatically (infrastructure in place, UI to bind is on the roadmap).
+- **Legacy migration**: old single-folder sessions are picked up automatically.
+
+Design notes, build instructions, lessons learned and a maintenance guide are documented
+in [docs/development-guide.md](docs/development-guide.md). The folder bookkeeping lives in
+a Qt-free `DirManager` core covered by 62 unit tests (`tests/test_dir_manager.cpp`).
+
+Everything below is the original YOLO-Label documentation.
+
+---
 
 ## Sponsors
 
@@ -181,16 +212,6 @@ Arguments are detected by file extension — `.onnx` files are loaded as YOLO mo
 | `Ctrl + Left Drag` (Windows/Linux) / `Cmd + Left Drag` (macOS) or `Middle Mouse Drag` | Pan while zoomed in |
 | `Wheel Down` (when cursor is over image) | Save and Next Image  |
 | `Wheel Up` (when cursor is over image) | Save and Prev Image |
-
-## Multi-Directory Support
-
-Work across multiple dataset folders without reopening the app.
-
-- **Add a folder**: open the **Folders** tab (right side panel) and click **"+ Open New Folder…"**, or use the regular *Open Files* flow — every opened directory is automatically added to the list.
-- **Switch folders**: press `Ctrl + Shift + D` (next) or `Ctrl + Shift + A` (previous), or click a folder in the **Folders** tab. Switching is cyclic.
-- **Progress tracking**: each folder remembers the last image you viewed. The Folders list shows `folderName (current/total)` for the active folder.
-- **Per-folder classes**: each folder can be bound to its own class file. When you switch to a folder with a bound class file, it loads automatically. Folders without a bound file inherit the currently loaded classes.
-- **Persistence**: the folder list, per-folder progress, and class bindings survive app restarts (stored in `QSettings`).
 
 ## Auto-Label (Pseudo Labeling)
 
