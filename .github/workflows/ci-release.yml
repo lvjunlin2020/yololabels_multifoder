@@ -1,0 +1,490 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+    paths-ignore:
+      - '**.md'
+      - '.claude/**'
+      - '.gitignore'
+      - 'LICENSE'
+      - 'Samples/**'
+  pull_request:
+    branches: [master]
+    paths-ignore:
+      - '**.md'
+      - '.claude/**'
+      - '.gitignore'
+      - 'LICENSE'
+      - 'Samples/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  QT_VERSION: '6.8.2'
+  ORT_VERSION: '1.24.1'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            qt_arch: win64_msvc2022_64
+            artifact_name: YoloLabel-Windows-x64
+            ort_package: onnxruntime-win-x64
+            ort_ext: zip
+          - os: ubuntu-22.04
+            artifact_name: YoloLabel-Linux-x64
+            ort_package: onnxruntime-linux-x64
+            ort_ext: tgz
+          - os: macos-latest
+            artifact_name: YoloLabel-macOS
+            ort_package: onnxruntime-osx-arm64
+            ort_ext: tgz
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: ${{ matrix.qt_arch || '' }}
+          cache: true
+
+      # ── Windows: setup MSVC toolchain ─────────────────────────
+      - name: Setup MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # ── Linux: install system dependencies ────────────────────
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev \
+            libxcb-xinerama0 \
+            libxcb-cursor0 \
+            libfuse2 \
+            libxkbcommon-x11-0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-randr0 \
+            libxcb-render-util0 \
+            libxcb-shape0
+
+      # ── Download ONNX Runtime ─────────────────────────────────
+      - name: Download ONNX Runtime (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          curl -L -o ort.${{ matrix.ort_ext }} \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/${{ matrix.ort_package }}-${{ env.ORT_VERSION }}.${{ matrix.ort_ext }}"
+          tar xzf ort.${{ matrix.ort_ext }}
+          mv ${{ matrix.ort_package }}-${{ env.ORT_VERSION }} onnxruntime
+
+      - name: Download ONNX Runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $pkg = "${{ matrix.ort_package }}-${{ env.ORT_VERSION }}"
+          Invoke-WebRequest -Uri "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/${pkg}.zip" -OutFile ort.zip
+          Expand-Archive -Path ort.zip -DestinationPath .
+          Rename-Item -Path $pkg -NewName onnxruntime
+
+      # ── Build ─────────────────────────────────────────────────
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          qmake YoloLabel.pro CONFIG+=release "ONNXRUNTIME_DIR=$PWD/onnxruntime"
+          make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 2)
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          qmake YoloLabel.pro CONFIG+=release "ONNXRUNTIME_DIR=%CD%\onnxruntime"
+          nmake
+
+      # ── Unit Tests (all platforms) ────────────────────────────
+      - name: Build and run unit tests (Unix)
+        if: runner.os != 'Windows'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          NPROC=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 2)
+          cd tests
+
+          qmake test_cloud_labeler.pro && make -j$NPROC
+          ./test_cloud_labeler
+          make clean
+
+          qmake test_label_img.pro && make -j$NPROC
+          ./test_label_img
+          make clean
+
+          qmake test_yolo_detector.pro "ONNXRUNTIME_DIR=$PWD/../onnxruntime" && make -j$NPROC
+          ./test_yolo_detector
+          make clean
+
+      - name: Build and run unit tests (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          cd tests
+
+          qmake test_cloud_labeler.pro
+          nmake
+          release\test_cloud_labeler.exe
+          nmake clean
+
+          qmake test_label_img.pro
+          nmake
+          release\test_label_img.exe
+          nmake clean
+
+          qmake test_yolo_detector.pro "ONNXRUNTIME_DIR=%CD%\..\onnxruntime"
+          nmake
+          release\test_yolo_detector.exe
+          nmake clean
+
+      # ── Accuracy Test (Linux only) ────────────────────────────
+      - name: Setup Python for accuracy test
+        if: runner.os == 'Linux'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ultralytics
+        if: runner.os == 'Linux'
+        run: pip install ultralytics
+
+      - name: Build test binary
+        if: runner.os == 'Linux'
+        run: |
+          cd tests
+          qmake test_inference.pro "ONNXRUNTIME_DIR=$PWD/../onnxruntime"
+          make -j$(nproc)
+
+      - name: Run accuracy test
+        if: runner.os == 'Linux'
+        run: |
+          python tests/run_accuracy_test.py \
+            --test-binary tests/test_inference \
+            --image Samples/images/raccoon_1.jpg \
+            --conf 0.25
+
+      # ── Package: Windows ──────────────────────────────────────
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          mkdir deploy
+          copy release\YoloLabel.exe deploy\
+          copy onnxruntime\lib\onnxruntime.dll deploy\
+          windeployqt deploy\YoloLabel.exe --release --no-translations
+
+      # ── macOS: import signing certificate ────────────────────
+      - name: Import signing certificate (macOS)
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERTIFICATE" ]; then
+            echo "No signing certificate found, will use ad-hoc signing"
+            exit 0
+          fi
+
+          # Decode the certificate
+          echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+
+          # Create a temporary keychain
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 20)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import certificate into the keychain
+          security import certificate.p12 -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Add temporary keychain to the search list
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+          # Verify signing identity
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+          # Clean up certificate file
+          rm -f certificate.p12
+
+          # Export for later steps
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "CODESIGN_IDENTITY=Developer ID Application" >> "$GITHUB_ENV"
+
+      # ── Package: macOS ────────────────────────────────────────
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # 1. Bundle Qt frameworks and plugins (do NOT pass -codesign
+          #    because macdeployqt has a known bug that skips signing
+          #    .framework bundle directories)
+          macdeployqt YoloLabel.app
+
+          # 2. Copy ONNX Runtime dylibs into Frameworks (after macdeployqt
+          #    so it does not interfere with them)
+          cp -a onnxruntime/lib/libonnxruntime*.dylib \
+            YoloLabel.app/Contents/Frameworks/
+
+          # 3. Ensure @executable_path/../Frameworks rpath exists.
+          #    macdeployqt usually adds this, but we add it defensively;
+          #    ignore "already exists" error.
+          install_name_tool -add_rpath @executable_path/../Frameworks \
+            YoloLabel.app/Contents/MacOS/YoloLabel 2>&1 \
+            | grep -v "would duplicate" || true
+
+          # 4. Code signing — inside-out per Apple requirements.
+          #    (codesign --deep is deprecated for signing as of macOS 13;
+          #     entitlements must only be applied to the main executable)
+          if [ -n "$CODESIGN_IDENTITY" ]; then
+            echo "Signing with: $CODESIGN_IDENTITY"
+
+            # 4a. Sign all dylibs in Frameworks/
+            find YoloLabel.app/Contents/Frameworks -name "*.dylib" -exec \
+              codesign --force --sign "$CODESIGN_IDENTITY" \
+                --options runtime --timestamp {} \;
+
+            # 4b. Sign .framework bundles (inside-out: binary first, then bundle)
+            for fw in YoloLabel.app/Contents/Frameworks/*.framework; do
+              [ -d "$fw" ] || continue
+              fw_name=$(basename "$fw" .framework)
+              if [ -f "$fw/Versions/A/$fw_name" ]; then
+                codesign --force --sign "$CODESIGN_IDENTITY" \
+                  --options runtime --timestamp "$fw/Versions/A/$fw_name"
+              fi
+              codesign --force --sign "$CODESIGN_IDENTITY" \
+                --options runtime --timestamp "$fw"
+            done
+
+            # 4c. Sign Qt plugins
+            find YoloLabel.app/Contents/PlugIns -name "*.dylib" -exec \
+              codesign --force --sign "$CODESIGN_IDENTITY" \
+                --options runtime --timestamp {} \;
+
+            # 4d. Sign the main app bundle LAST (with entitlements)
+            codesign --force --sign "$CODESIGN_IDENTITY" \
+              --options runtime --timestamp \
+              --entitlements scripts/entitlements.plist \
+              YoloLabel.app
+
+            # 4e. Verify (--deep is fine for verification)
+            codesign --verify --deep --strict --verbose=2 YoloLabel.app
+          else
+            echo "No certificate available, using ad-hoc signing"
+            codesign --force --deep --sign - YoloLabel.app
+          fi
+
+          # 5. Create DMG
+          hdiutil create -volname YoloLabel -srcfolder YoloLabel.app \
+            -ov -format UDZO "${{ matrix.artifact_name }}.dmg"
+
+          # 6. Sign the DMG (no --options runtime needed for disk images)
+          if [ -n "$CODESIGN_IDENTITY" ]; then
+            codesign --force --sign "$CODESIGN_IDENTITY" \
+              --timestamp "${{ matrix.artifact_name }}.dmg"
+          fi
+
+      # ── macOS: notarize DMG (releases only) ───────────────────
+      - name: Notarize DMG (macOS)
+        if: runner.os == 'macOS' && env.CODESIGN_IDENTITY != '' && startsWith(github.ref, 'refs/tags/')
+        timeout-minutes: 25
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          SUBMIT_OUTPUT=$(xcrun notarytool submit "${{ matrix.artifact_name }}.dmg" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 20m 2>&1) || {
+            echo "$SUBMIT_OUTPUT"
+            SUBMISSION_ID=$(echo "$SUBMIT_OUTPUT" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
+            if [ -n "$SUBMISSION_ID" ]; then
+              echo "--- Notarization log ---"
+              xcrun notarytool log "$SUBMISSION_ID" \
+                --apple-id "$APPLE_ID" \
+                --password "$APPLE_ID_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" 2>&1 || true
+            fi
+            exit 1
+          }
+          echo "$SUBMIT_OUTPUT"
+
+          xcrun stapler staple "${{ matrix.artifact_name }}.dmg"
+
+      # ── macOS: cleanup keychain ──────────────────────────────
+      - name: Cleanup keychain (macOS)
+        if: always() && runner.os == 'macOS' && env.KEYCHAIN_PATH != ''
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH"
+
+      # ── Package: Linux ────────────────────────────────────────
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          # Prepare AppDir
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/lib
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+          cp YoloLabel AppDir/usr/bin/
+          cp onnxruntime/lib/libonnxruntime.so* AppDir/usr/lib/
+
+          # Create desktop entry
+          cat > AppDir/usr/share/applications/yololabel.desktop << 'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=YoloLabel
+          Exec=YoloLabel
+          Icon=yololabel
+          Categories=Graphics;
+          Comment=YOLO format image labeling tool
+          EOF
+
+          # Create minimal placeholder icon
+          python3 -c "
+          import struct, zlib
+          def png(w,h):
+            def chunk(t,d):
+              c=t+d; return struct.pack('>I',len(d))+c+struct.pack('>I',zlib.crc32(c)&0xffffffff)
+            raw=b''
+            for y in range(h):
+              raw+=b'\x00'+b'\x00\x80\x00'*w
+            return b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',w,h,8,2,0,0,0))+chunk(b'IDAT',zlib.compress(raw))+chunk(b'IEND',b'')
+          open('AppDir/usr/share/icons/hicolor/256x256/apps/yololabel.png','wb').write(png(256,256))
+          "
+
+          # Download linuxdeploy and Qt plugin
+          wget -q -O linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q -O linuxdeploy-plugin-qt https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy linuxdeploy-plugin-qt
+
+          # Try AppImage creation
+          export QMAKE="$(which qmake)"
+          ./linuxdeploy \
+            --appdir AppDir \
+            --desktop-file AppDir/usr/share/applications/yololabel.desktop \
+            --plugin qt \
+            --output appimage \
+            || true
+
+          if ls YoloLabel*.AppImage 1>/dev/null 2>&1; then
+            mv YoloLabel*.AppImage "${{ matrix.artifact_name }}.AppImage"
+          else
+            echo "AppImage creation failed, creating tar.gz fallback"
+            mkdir -p package/YoloLabel
+            cp YoloLabel package/YoloLabel/
+
+            QT_LIB_DIR="$(qmake -query QT_INSTALL_LIBS)"
+            QT_PLUGIN_DIR="$(qmake -query QT_INSTALL_PLUGINS)"
+
+            mkdir -p package/YoloLabel/lib
+            mkdir -p package/YoloLabel/plugins/platforms
+
+            for lib in libQt6Core libQt6Gui libQt6Widgets libQt6XcbQpa libQt6DBus libQt6OpenGL libicui18n libicuuc libicudata; do
+              cp -L "${QT_LIB_DIR}/${lib}.so"* package/YoloLabel/lib/ 2>/dev/null || true
+            done
+
+            cp onnxruntime/lib/libonnxruntime.so* package/YoloLabel/lib/
+
+            cp -L "${QT_PLUGIN_DIR}/platforms/libqxcb.so" package/YoloLabel/plugins/platforms/ 2>/dev/null || true
+
+            cat > package/YoloLabel/YoloLabel.sh << 'LAUNCHER'
+          #!/bin/bash
+          SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+          export LD_LIBRARY_PATH="${SELF_DIR}/lib:${LD_LIBRARY_PATH}"
+          export QT_PLUGIN_PATH="${SELF_DIR}/plugins"
+          exec "${SELF_DIR}/YoloLabel" "$@"
+          LAUNCHER
+            chmod +x package/YoloLabel/YoloLabel.sh
+
+            cd package
+            tar -czf "../${{ matrix.artifact_name }}.tar.gz" YoloLabel
+          fi
+
+      # ── Upload artifacts ──────────────────────────────────────
+      - name: Upload artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: deploy/
+
+      - name: Upload artifact (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: '*.dmg'
+
+      - name: Upload artifact (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            *.AppImage
+            *.tar.gz
+
+  # ═══════════════════════════════════════════════════════════════
+  # Release (only on tag push)
+  # ═══════════════════════════════════════════════════════════════
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display artifacts
+        run: ls -R artifacts
+
+      - name: Create release archives
+        run: |
+          cd artifacts/YoloLabel-Windows-x64
+          zip -r ../YoloLabel-Windows-x64.zip .
+          cd ../..
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            artifacts/*.zip
+            artifacts/**/*.dmg
+            artifacts/**/*.AppImage
+            artifacts/**/*.tar.gz
